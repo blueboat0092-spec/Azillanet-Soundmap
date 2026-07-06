@@ -978,7 +978,37 @@
 
 <!-- Leaflet Library -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, collection, onSnapshot, doc, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    // ==========================================
+    // 🔗 FIREBASE SHARING CONFIGURATION
+    // ==========================================
+    // To enable real-time sharing across devices:
+    // 1. Create a Firebase project at https://console.firebase.google.com/
+    // 2. Enable "Firestore Database" in Test Mode.
+    // 3. Register a Web App and paste your firebaseConfig object below:
+    const firebaseConfig = {
+        apiKey: "",
+        authDomain: "",
+        projectId: "",
+        storageBucket: "",
+        messagingSenderId: "",
+        appId: ""
+    };
+
+    const isFirebaseEnabled = !!(firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId);
+    let db = null;
+    if (isFirebaseEnabled) {
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+        } catch (err) {
+            console.error("Firebase init failed, falling back to local storage:", err);
+        }
+    }
+
     // Initial workshop template data source (Azillanet, France)
     const DEFAULT_SOUND_DATA = [
         {
@@ -1016,31 +1046,33 @@
     // Data array that changes in memory
     const soundData = [];
     
-    // Load from localStorage (renamed key so as not to conflict with Ganghwa map!)
-    const APP_VERSION = "2026-07-07-v1";
-    if (localStorage.getItem('azhilanet_app_version') !== APP_VERSION) {
-        localStorage.removeItem('azhilanet_sound_data');
-        localStorage.removeItem('azhilanet_custom_categories');
-        localStorage.removeItem('azhilanet_category_colors');
-        localStorage.removeItem('azhilanet_deleted_defaults');
-        localStorage.setItem('azhilanet_app_version', APP_VERSION);
-    }
+    // Load from localStorage or fallback if Firebase is disabled
+    if (!isFirebaseEnabled) {
+        const APP_VERSION = "2026-07-07-v1";
+        if (localStorage.getItem('azhilanet_app_version') !== APP_VERSION) {
+            localStorage.removeItem('azhilanet_sound_data');
+            localStorage.removeItem('azhilanet_custom_categories');
+            localStorage.removeItem('azhilanet_category_colors');
+            localStorage.removeItem('azhilanet_deleted_defaults');
+            localStorage.setItem('azhilanet_app_version', APP_VERSION);
+        }
 
-    const localData = localStorage.getItem('azhilanet_sound_data');
-    if (localData) {
-        try {
-            const parsed = JSON.parse(localData);
-            if (Array.isArray(parsed)) {
-                soundData.push(...parsed);
-            } else {
+        const localData = localStorage.getItem('azhilanet_sound_data');
+        if (localData) {
+            try {
+                const parsed = JSON.parse(localData);
+                if (Array.isArray(parsed)) {
+                    soundData.push(...parsed);
+                } else {
+                    soundData.push(...DEFAULT_SOUND_DATA);
+                }
+            } catch(e) {
+                console.error("Local data parse error. Falling back to default", e);
                 soundData.push(...DEFAULT_SOUND_DATA);
             }
-        } catch(e) {
-            console.error("Local data parse error. Falling back to default", e);
+        } else {
             soundData.push(...DEFAULT_SOUND_DATA);
         }
-    } else {
-        soundData.push(...DEFAULT_SOUND_DATA);
     }
 
     // Leaflet map setup - Centered on Azillanet, France
@@ -1233,22 +1265,29 @@
             return;
         }
 
-        let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
-        if (!customCats.includes(name)) {
-            customCats.push(name);
-            localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
-        }
+        if (isFirebaseEnabled) {
+            setDoc(doc(db, "azhilanet_custom_categories", name), { name: name });
+            setDoc(doc(db, "azhilanet_category_colors", name), { color: color });
+        } else {
+            let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
+            if (!customCats.includes(name)) {
+                customCats.push(name);
+                localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
+            }
 
-        // Save Color
-        const colors = JSON.parse(localStorage.getItem('azhilanet_category_colors') || '{}');
-        colors[name] = color;
-        localStorage.setItem('azhilanet_category_colors', JSON.stringify(colors));
+            // Save Color
+            const colors = JSON.parse(localStorage.getItem('azhilanet_category_colors') || '{}');
+            colors[name] = color;
+            localStorage.setItem('azhilanet_category_colors', JSON.stringify(colors));
+        }
 
         alert(`Category "${name}" has been created successfully.`);
         closeCategoryModal();
         
-        renderCategories();
-        renderMarkers();
+        if (!isFirebaseEnabled) {
+            renderCategories();
+            renderMarkers();
+        }
 
         // Auto-select in the Edit Modal if it is open
         const editModal = document.getElementById('edit-modal');
@@ -1848,42 +1887,66 @@
             marker.setLatLng([lat, lng]);
         }
 
-        delete soundData[idx].isTemporary;
+        if (isFirebaseEnabled) {
+            const trackObj = {
+                title,
+                desc,
+                meta,
+                lat,
+                lng,
+                embed,
+                imageUrl,
+                category,
+                imageBase64: uploadedImageBase64 || (soundData[idx] && soundData[idx].imageBase64) || ""
+            };
 
-        soundData[idx] = {
-            title,
-            desc,
-            meta,
-            lat,
-            lng,
-            embed,
-            imageUrl,
-            category,
-            imageBase64: uploadedImageBase64
-        };
+            const docId = soundData[idx] ? soundData[idx].docId : null;
+            if (docId) {
+                updateDoc(doc(db, "azhilanet_sounds", docId), trackObj);
+            } else {
+                addDoc(collection(db, "azhilanet_sounds"), trackObj);
+            }
 
-        // Save Color Mapping
-        const colors = JSON.parse(localStorage.getItem('azhilanet_category_colors') || '{}');
-        colors[category] = catColor;
-        localStorage.setItem('azhilanet_category_colors', JSON.stringify(colors));
+            setDoc(doc(db, "azhilanet_category_colors", category), { color: catColor });
+            setDoc(doc(db, "azhilanet_custom_categories", category), { name: category });
+        } else {
+            delete soundData[idx].isTemporary;
 
-        // Save custom category to cards list tracking
-        let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
-        if (!customCats.includes(category)) {
-            customCats.push(category);
-            localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
-        }
+            soundData[idx] = {
+                title,
+                desc,
+                meta,
+                lat,
+                lng,
+                embed,
+                imageUrl,
+                category,
+                imageBase64: uploadedImageBase64
+            };
 
-        saveToLocalStorage();
-        renderMarkers();
-        renderCategories();
-        
-        if (selectedCategoryName) {
-            renderTracklistForCategory(selectedCategoryName);
+            // Save Color Mapping
+            const colors = JSON.parse(localStorage.getItem('azhilanet_category_colors') || '{}');
+            colors[category] = catColor;
+            localStorage.setItem('azhilanet_category_colors', JSON.stringify(colors));
+
+            // Save custom category to cards list tracking
+            let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
+            if (!customCats.includes(category)) {
+                customCats.push(category);
+                localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
+            }
+
+            saveToLocalStorage();
+            renderMarkers();
+            renderCategories();
+            
+            if (selectedCategoryName) {
+                renderTracklistForCategory(selectedCategoryName);
+            }
+            selectTrack(idx);
         }
 
         document.getElementById('edit-modal').style.display = 'none';
-        selectTrack(idx);
     }
 
     // Delete track
@@ -1895,12 +1958,19 @@
                 marker.off('drag');
             }
 
-            soundData.splice(idx, 1);
-            saveToLocalStorage();
-            renderMarkers();
-            renderCategories();
-            if (selectedCategoryName) {
-                renderTracklistForCategory(selectedCategoryName);
+            if (isFirebaseEnabled) {
+                const docId = soundData[idx] ? soundData[idx].docId : null;
+                if (docId) {
+                    deleteDoc(doc(db, "azhilanet_sounds", docId));
+                }
+            } else {
+                soundData.splice(idx, 1);
+                saveToLocalStorage();
+                renderMarkers();
+                renderCategories();
+                if (selectedCategoryName) {
+                    renderTracklistForCategory(selectedCategoryName);
+                }
             }
             currentTrackIndex = -1;
             map.closePopup();
@@ -1922,33 +1992,53 @@
             return;
         }
 
-        // Check if it's a default preset category
-        const defaultPresets = ["Village Soundscape", "Nature Recordings", "Workshop Exercises"];
-        if (defaultPresets.includes(catName)) {
-            let deletedDefaults = JSON.parse(localStorage.getItem('azhilanet_deleted_defaults') || '[]');
-            if (!deletedDefaults.includes(catName)) {
-                deletedDefaults.push(catName);
-                localStorage.setItem('azhilanet_deleted_defaults', JSON.stringify(deletedDefaults));
+        if (isFirebaseEnabled) {
+            // Remove from custom categories collection
+            deleteDoc(doc(db, "azhilanet_custom_categories", catName));
+
+            // Set in deleted defaults if it's default
+            const defaultPresets = ["Village Soundscape", "Nature Recordings", "Workshop Exercises"];
+            if (defaultPresets.includes(catName)) {
+                setDoc(doc(db, "azhilanet_deleted_defaults", catName), {});
             }
+
+            // Reassign tracks
+            soundData.forEach(track => {
+                if ((track.category || "Village Soundscape") === catName) {
+                    if (track.docId) {
+                        updateDoc(doc(db, "azhilanet_sounds", track.docId), { category: fallbackCat });
+                    }
+                }
+            });
+        } else {
+            // Check if it's a default preset category
+            const defaultPresets = ["Village Soundscape", "Nature Recordings", "Workshop Exercises"];
+            if (defaultPresets.includes(catName)) {
+                let deletedDefaults = JSON.parse(localStorage.getItem('azhilanet_deleted_defaults') || '[]');
+                if (!deletedDefaults.includes(catName)) {
+                    deletedDefaults.push(catName);
+                    localStorage.setItem('azhilanet_deleted_defaults', JSON.stringify(deletedDefaults));
+                }
+            }
+
+            // Remove from custom categories list in local storage
+            let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
+            customCats = customCats.filter(c => c !== catName);
+            localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
+
+            // Reassign tracks
+            soundData.forEach(track => {
+                if ((track.category || "Village Soundscape") === catName) {
+                    track.category = fallbackCat;
+                }
+            });
+            saveToLocalStorage();
+
+            alert(`Category "${catName}" has been successfully deleted.`);
+            renderCategories();
+            renderMarkers();
+            slideBackToCategories();
         }
-
-        // Remove from custom categories list in local storage
-        let customCats = JSON.parse(localStorage.getItem('azhilanet_custom_categories') || '[]');
-        customCats = customCats.filter(c => c !== catName);
-        localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
-
-        // Reassign tracks
-        soundData.forEach(track => {
-            if ((track.category || "Village Soundscape") === catName) {
-                track.category = fallbackCat;
-            }
-        });
-        saveToLocalStorage();
-
-        alert(`Category "${catName}" has been successfully deleted.`);
-        renderCategories();
-        renderMarkers();
-        slideBackToCategories();
     }
 
     // Collaborative Base64 Import/Export Systems
@@ -2037,20 +2127,58 @@
     }
 
     // Reset modifications back to default list
-    function resetData() {
-        if (confirm("Are you sure you want to reset the workshop database back to the initial template? This deletes all custom entries.")) {
-            localStorage.removeItem('azhilanet_sound_data');
-            localStorage.removeItem('azhilanet_custom_categories');
-            localStorage.removeItem('azhilanet_category_colors');
-            localStorage.removeItem('azhilanet_deleted_defaults');
-            soundData.length = 0;
-            soundData.push(...DEFAULT_SOUND_DATA);
-            renderMarkers();
-            renderCategories();
-            slideBackToCategories();
-            currentTrackIndex = -1;
-            map.closePopup();
-            alert("Workshop template reset completed.");
+    async function resetData() {
+        if (confirm("Are you sure you want to reset the database back to the initial template? This deletes all custom entries.")) {
+            if (isFirebaseEnabled) {
+                try {
+                    // Delete all sounds
+                    const soundsSnap = await getDocs(collection(db, "azhilanet_sounds"));
+                    for (const docEl of soundsSnap.docs) {
+                        await deleteDoc(doc(db, "azhilanet_sounds", docEl.id));
+                    }
+                    
+                    // Delete all custom categories
+                    const catsSnap = await getDocs(collection(db, "azhilanet_custom_categories"));
+                    for (const docEl of catsSnap.docs) {
+                        await deleteDoc(doc(db, "azhilanet_custom_categories", docEl.id));
+                    }
+
+                    // Delete all colors
+                    const colorsSnap = await getDocs(collection(db, "azhilanet_category_colors"));
+                    for (const docEl of colorsSnap.docs) {
+                        await deleteDoc(doc(db, "azhilanet_category_colors", docEl.id));
+                    }
+
+                    // Delete all deleted defaults
+                    const delSnap = await getDocs(collection(db, "azhilanet_deleted_defaults"));
+                    for (const docEl of delSnap.docs) {
+                        await deleteDoc(doc(db, "azhilanet_deleted_defaults", docEl.id));
+                    }
+
+                    // Seed default sound data
+                    for (const track of DEFAULT_SOUND_DATA) {
+                        await addDoc(collection(db, "azhilanet_sounds"), track);
+                    }
+
+                    alert("Database reset and seeded with default templates successfully.");
+                } catch (err) {
+                    console.error("Firebase reset failed:", err);
+                    alert("Error resetting database: " + err.message);
+                }
+            } else {
+                localStorage.removeItem('azhilanet_sound_data');
+                localStorage.removeItem('azhilanet_custom_categories');
+                localStorage.removeItem('azhilanet_category_colors');
+                localStorage.removeItem('azhilanet_deleted_defaults');
+                soundData.length = 0;
+                soundData.push(...DEFAULT_SOUND_DATA);
+                renderMarkers();
+                renderCategories();
+                slideBackToCategories();
+                currentTrackIndex = -1;
+                map.closePopup();
+                alert("Workshop template reset completed.");
+            }
         }
     }
 
@@ -2061,42 +2189,38 @@
             if (!resp.ok) throw new Error("Fetch failed");
             let html = await resp.text();
 
+            // Clear temporary draft tracks that weren't saved
             const cleanSoundData = soundData.filter(t => !t.isTemporary).map(t => {
-                const { isTemporary, ...rest } = t;
+                const { isTemporary, docId, ...rest } = t;
                 return rest;
             });
 
-            // Replace soundData array definition
-            const dataRegex = /const\s+DEFAULT_SOUND_DATA\s*=\s*\[[\s\S]*?\]\s*;/;
             const newBlock = `const DEFAULT_SOUND_DATA = ${JSON.stringify(cleanSoundData, null, 8)};`;
-            html = html.replace(dataRegex, newBlock);
-
-            const blob = new Blob([html], { type: 'text/html' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'index.html';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            console.error("Local download failed. Offering copy-paste option.", e);
             
+            // Replace the default data code block inside downloaded html
+            html = html.replace(/const DEFAULT_SOUND_DATA = \[\s*[\s\S]*?\s*\];/, newBlock);
+
+            const blob = new Blob([html], { type: "text/html" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = "index.html";
+            link.click();
+        } catch (err) {
+            console.error(err);
+            // Fallback screen text block copy systems if Localhost fetch fails due to CORS
             const cleanSoundData = soundData.filter(t => !t.isTemporary).map(t => {
-                const { isTemporary, ...rest } = t;
+                const { isTemporary, docId, ...rest } = t;
                 return rest;
             });
-            const jsonStr = JSON.stringify(cleanSoundData, null, 8);
+            const jsonStr = `const DEFAULT_SOUND_DATA = ${JSON.stringify(cleanSoundData, null, 8)};`;
 
             const copyModal = document.createElement('div');
-            copyModal.id = "fallback-copy-modal";
+            copyModal.id = 'fallback-copy-modal';
             copyModal.style.cssText = `
-                position: fixed; top: 12%; left: 50%; transform: translateX(-50%);
-                width: 90%; max-width: 500px; max-height: 80vh; background: var(--bg-panel);
-                border: 2px solid var(--border-color); box-shadow: 6px 6px 0px var(--shadow-color);
-                padding: 16px; z-index: 5000; color: var(--text-main); font-family: var(--font-mono);
-                box-sizing: border-box; display: flex; flex-direction: column;
+                position: fixed; top: 10%; left: 5%; width: 90%; height: 80%; background: #ffffff;
+                border: 2px solid var(--border-color); box-shadow: 6px 6px 0 var(--shadow-color);
+                z-index: 10000; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column;
+                font-family: var(--font-mono);
             `;
             copyModal.innerHTML = `
                 <div style="font-weight: bold; margin-bottom: 10px; color: var(--text-accent);">[CORS PROTOCOL RESTRICTION]</div>
@@ -2123,12 +2247,87 @@
             .replace(/'/g, "&#039;");
     }
 
+    // Expose module functions to global window scope
+    window.toggleInfo = toggleInfo;
+    window.toggleAdminMode = toggleAdminMode;
+    window.downloadHtml = downloadHtml;
+    window.resetData = resetData;
+    window.toggleSidebar = toggleSidebar;
+    window.toggleAddSpotMode = toggleAddSpotMode;
+    window.exportDataString = exportDataString;
+    window.importDataString = importDataString;
+    window.promptCreateCategory = promptCreateCategory;
+    window.slideBackToCategories = slideBackToCategories;
+    window.closeEditModal = closeEditModal;
+    window.closeCategoryModal = closeCategoryModal;
+    window.saveNewCategory = saveNewCategory;
+    window.deleteCategory = deleteCategory;
+    window.openEditModal = openEditModal;
+    window.deleteTrack = deleteTrack;
+    window.selectTrack = selectTrack;
+    window.handleCategorySelectChange = handleCategorySelectChange;
+    window.handleImageUpload = handleImageUpload;
+    window.submitEditForm = submitEditForm;
+
     // Initialization
     const initIsMobile = window.innerWidth <= 768;
     document.getElementById('sidebar-toggle-tab').innerText = initIsMobile ? '▾' : '▸';
     
-    renderCategories();
-    renderMarkers();
+    if (isFirebaseEnabled) {
+        // 1. Real-time Sounds Listener
+        onSnapshot(collection(db, "azhilanet_sounds"), (snapshot) => {
+            if (snapshot.empty) {
+                // Seed database with defaults
+                DEFAULT_SOUND_DATA.forEach(track => {
+                    addDoc(collection(db, "azhilanet_sounds"), track);
+                });
+                return;
+            }
+            soundData.length = 0;
+            snapshot.forEach(doc => {
+                soundData.push({ docId: doc.id, ...doc.data() });
+            });
+            renderMarkers();
+            renderCategories();
+            if (selectedCategoryName) {
+                renderTracklistForCategory(selectedCategoryName);
+            }
+        });
+
+        // 2. Real-time Colors Listener
+        onSnapshot(collection(db, "azhilanet_category_colors"), (snapshot) => {
+            const colors = {};
+            snapshot.forEach(doc => {
+                colors[doc.id] = doc.data().color;
+            });
+            localStorage.setItem('azhilanet_category_colors', JSON.stringify(colors));
+            renderCategories();
+            renderMarkers();
+        });
+
+        // 3. Real-time Custom Categories Listener
+        onSnapshot(collection(db, "azhilanet_custom_categories"), (snapshot) => {
+            const customCats = [];
+            snapshot.forEach(doc => {
+                customCats.push(doc.data().name);
+            });
+            localStorage.setItem('azhilanet_custom_categories', JSON.stringify(customCats));
+            renderCategories();
+        });
+
+        // 4. Real-time Deleted Defaults Listener
+        onSnapshot(collection(db, "azhilanet_deleted_defaults"), (snapshot) => {
+            const deleted = [];
+            snapshot.forEach(doc => {
+                deleted.push(doc.id);
+            });
+            localStorage.setItem('azhilanet_deleted_defaults', JSON.stringify(deleted));
+            renderCategories();
+        });
+    } else {
+        renderCategories();
+        renderMarkers();
+    }
 </script>
 </body>
 </html>
